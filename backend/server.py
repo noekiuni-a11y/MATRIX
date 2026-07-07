@@ -456,6 +456,57 @@ async def admin_stats(admin: dict = Depends(require_admin)):
     }
 
 
+# ---------------- Admin: User Management ----------------
+class RoleInput(BaseModel):
+    role: str  # "admin" or "user"
+
+
+class GrantBrixInput(BaseModel):
+    amount: int  # positive to grant, negative to deduct
+
+
+@api_router.get("/admin/users")
+async def admin_list_users(search: str = "", admin: dict = Depends(require_admin)):
+    query = {}
+    if search.strip():
+        rx = {"$regex": search.strip(), "$options": "i"}
+        query = {"$or": [{"username": rx}, {"email": rx}]}
+    users = await db.users.find(query).sort("created_at", -1).to_list(500)
+    return [
+        {
+            "id": str(u["_id"]),
+            "username": u.get("username"),
+            "email": u.get("email"),
+            "role": u.get("role", "user"),
+            "brix": u.get("brix", 0),
+        }
+        for u in users
+    ]
+
+
+@api_router.post("/admin/users/{user_id}/role")
+async def admin_set_role(user_id: str, data: RoleInput, admin: dict = Depends(require_admin)):
+    if data.role not in ("admin", "user"):
+        raise HTTPException(status_code=400, detail="Role must be 'admin' or 'user'")
+    if str(admin["_id"]) == user_id and data.role != "admin":
+        raise HTTPException(status_code=400, detail="You cannot remove your own admin access")
+    target = await db.users.find_one({"_id": ObjectId(user_id)})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    await db.users.update_one({"_id": ObjectId(user_id)}, {"$set": {"role": data.role}})
+    return {"id": user_id, "role": data.role, "username": target.get("username")}
+
+
+@api_router.post("/admin/users/{user_id}/grant-brix")
+async def admin_grant_brix(user_id: str, data: GrantBrixInput, admin: dict = Depends(require_admin)):
+    target = await db.users.find_one({"_id": ObjectId(user_id)})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    new_balance = max(int(target.get("brix", 0)) + data.amount, 0)
+    await db.users.update_one({"_id": ObjectId(user_id)}, {"$set": {"brix": new_balance}})
+    return {"id": user_id, "brix": new_balance, "username": target.get("username")}
+
+
 # ---------------- Payments (Stripe: buy Brix) ----------------
 @api_router.get("/payments/packages")
 async def list_packages():

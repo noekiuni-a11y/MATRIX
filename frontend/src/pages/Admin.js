@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import api, { formatApiError } from "@/lib/api";
 import { toast } from "sonner";
-import { Shield, Plus, Trash2, Loader2, Store, Gift, Trophy, Users, Upload } from "lucide-react";
+import { Shield, Plus, Trash2, Loader2, Store, Gift, Trophy, Users, Upload, Search, Coins, UserCog } from "lucide-react";
 
 const TABS = [
   { id: "items", label: "Items", icon: Store },
   { id: "promos", label: "Promocodes", icon: Gift },
   { id: "challenges", label: "Challenges", icon: Trophy },
+  { id: "users", label: "Users", icon: Users },
 ];
 
 const inputCls = "w-full px-4 py-2.5 border-[3px] border-slate-900 rounded-xl font-medium outline-none focus:ring-4 ring-blue-200";
