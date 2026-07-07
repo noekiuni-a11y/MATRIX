@@ -147,8 +147,15 @@ export default function BuyBrix() {
             <div
               key={p.id}
               data-testid={`brix-package-${p.id}`}
-              className="flex flex-col bg-white border-4 border-slate-900 rounded-2xl overflow-hidden shadow-[4px_4px_0px_#0F172A] hover:-translate-y-2 hover:shadow-[8px_8px_0px_#0F172A] transition-all"
+              className={`relative flex flex-col bg-white border-4 border-slate-900 rounded-2xl overflow-hidden shadow-[4px_4px_0px_#0F172A] hover:-translate-y-2 hover:shadow-[8px_8px_0px_#0F172A] transition-all ${
+                p.id === "popular" ? "ring-4 ring-pink-400" : ""
+              }`}
             >
+              {p.id === "popular" && (
+                <span className="absolute top-2 right-2 z-10 bg-pink-500 text-white text-[10px] font-black px-2 py-0.5 border-2 border-slate-900 rounded-full uppercase">
+                  Most Popular
+                </span>
+              )}
               <div className={`${COLORS[i % COLORS.length]} border-b-4 border-slate-900 p-6 flex flex-col items-center`}>
                 <Coins size={40} strokeWidth={2.5} className="text-slate-900" />
                 <p className="font-display font-black text-3xl mt-2 text-slate-900">{p.brix.toLocaleString()}</p>

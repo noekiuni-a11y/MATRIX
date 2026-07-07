@@ -478,7 +478,8 @@ async def create_checkout(data: CheckoutInput, request: Request, user: dict = De
         raise HTTPException(status_code=400, detail="Invalid package")
     amount = float(pkg["usd"])
     total_brix = pkg["brix"] + pkg["bonus"]
-    origin = data.origin_url.rstrip("/")
+    # Prefer the verified Origin header; fall back to the provided origin_url
+    origin = (request.headers.get("origin") or data.origin_url).rstrip("/")
     success_url = f"{origin}/buy-brix?session_id={{CHECKOUT_SESSION_ID}}"
     cancel_url = f"{origin}/buy-brix"
     metadata = {
@@ -532,6 +533,9 @@ async def _credit_if_paid(session_id: str, status: CheckoutStatusResponse):
 
 @api_router.get("/payments/status/{session_id}")
 async def payment_status(session_id: str, request: Request, user: dict = Depends(get_current_user)):
+    txn = await db.payment_transactions.find_one({"session_id": session_id})
+    if not txn or txn.get("user_id") != str(user["_id"]):
+        raise HTTPException(status_code=404, detail="Transaction not found")
     stripe = get_stripe(request)
     status = await stripe.get_checkout_status(session_id)
     await _credit_if_paid(session_id, status)
