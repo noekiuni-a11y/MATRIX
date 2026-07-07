@@ -1,0 +1,49 @@
+{
+  "summary": "First full E2E validation of MATRIX MVP. Backend pytest suite (29 tests) covers auth, catalog, purchase, avatar, profile, promocodes, daily challenge, admin CRUD & stats — 29/29 PASS. Playwright UI validated the full user flow: unauth guard, register (500 Brix), login, catalog listing (6 items), category filter, item detail, purchase (Brix decrement + Owned badge), 'Not enough Brix' block for 2000 Brix Jetpack, promocode MATRIX2026 (+250) & duplicate blocked, daily challenge claim (+75) & re-claim blocked, avatar color save + equipping owned item, profile page shows username, /admin redirect for non-admin, admin login, admin panel with Items/Promocodes/Challenges tabs, stats card, and delete UI. All data-testid selectors present and functional.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "CORS middleware", "issue": "allow_origins=['*'] with allow_credentials=False — auth relies on Authorization header (Bearer) since cookies aren't sent cross-origin. Works correctly but note: `access_token` cookie is read in get_current_user but never set by any route, so cookie path is dead code."},
+      {"endpoint": "@app.on_event('startup'/'shutdown')", "issue": "FastAPI deprecation warning — recommend switching to lifespan handlers before FastAPI removes on_event."},
+      {"endpoint": "PUT /api/avatar", "issue": "Line 187 constructs `updates` but never uses it — dead code (payload is rebuilt via model_dump(exclude_unset=True) on the next line). Cosmetic cleanup only."},
+      {"endpoint": "PUT /api/profile", "issue": "Accepts raw dict (no Pydantic model) — should validate `bio` as str with length limit."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "AvatarEditor", "issues": ["'Equip' toggle shows an 'X' badge on the equipped item — visually reads as remove/close rather than a selected checkmark; consider using a check icon to reduce confusion."]},
+      {"screen": "Catalog", "issues": ["'Owned' badge on catalog cards uses the same colored area as the 'Live' badge — layout OK but on small viewports they can overlap visually."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(Optional cleanup) Remove dead `access_token` cookie-read code from get_current_user OR set cookie on login — pick one path.",
+    "(Optional cleanup) Remove unused `updates` variable in PUT /api/avatar.",
+    "(Optional) Migrate startup/shutdown to FastAPI lifespan handlers to silence deprecation warnings."
+  ],
+  "critical_code_review_comments": [
+    "server.py is 460 lines — acceptable for MVP but nearing the 700-line threshold; consider splitting into routers/auth.py, catalog.py, admin.py as it grows.",
+    "get_current_user reads token from BOTH `access_token` cookie AND Authorization header, but no route ever sets an access_token cookie — cookie branch is unreachable. Either delete or wire up cookie-based auth end-to-end.",
+    "PUT /api/profile uses `data: dict` instead of Pydantic — bypasses validation; add a ProfileInput model with bounded str.",
+    "Admin authorization is correctly enforced via require_admin dependency; non-admin returns 403 as expected — verified.",
+    "Purchase endpoint is not atomic (find_one → update_one). Under concurrent buys this could allow double-spend or duplicate ownership; consider `find_one_and_update` with an atomic $inc/$push guarded by {'brix': {'$gte': price}, '_id': user_id}. Not blocking for MVP.",
+    "Daily challenge uses server date UTC (date.today()) — no timezone handling for users in other zones; fine for MVP.",
+    "MongoDB _id is correctly excluded/converted in all serializers (clean_user, serialize_item, serialize_promo)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (new)",
+    "/app/test_reports/iteration_1.json (new)"
+  ],
+  "success_rate": {"backend": "100% (29/29)", "frontend": "100% of tested flows"},
+  "test_credentials": "Admin: admin@matrix.com / admin123. Fresh test users created per-run via /api/auth/register with @example.com emails (Pydantic EmailStr rejects @matrix.test etc. as reserved TLD).",
+  "seed_data_creation": "None created by tests. Backend already seeds: 6 catalog items, 2 promocodes (MATRIX2026=250 Brix, WELCOME=100 Brix), 1 active daily challenge (Daily Login Bonus, 75 Brix), 1 admin user.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend seed is already populated (persisted in MongoDB). Test suite at /app/backend/tests/backend_test.py is idempotent — creates fresh users per class as needed. Note Pydantic EmailStr rejects @matrix.test/@matrix.local — always use @example.com or similar public TLD for test emails. pytest.ini enforces `-n 2 --dist loadscope`; session fixtures are per-worker so tests in different classes may see different users. The `/api/challenges/daily/claim` is idempotent-per-day per user — subsequent runs on the same UTC day for the same test user will hit the 'already claimed' branch, which the suite expects.",
+  "rca of the issue": "N/A — no unresolved bugs. Initial test failures were caused by (1) Pydantic EmailStr rejecting reserved TLDs (fixed by using @example.com), and (2) pytest-xdist loadscope causing session-scoped user fixture to be shared across TestPurchase and TestAvatarProfile on the same worker, leading to insufficient Brix for the 'buy cheapest' test after TestAvatarProfile had already spent Brix — fixed by using dedicated fresh users for the two mutating purchase tests."
+}
