@@ -3,7 +3,7 @@ import api, { formatApiError } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { toast } from "sonner";
 import AvatarPreview from "@/components/AvatarPreview";
-import { Loader2, Save, Shirt, X } from "lucide-react";
+import { Loader2, Save, Shirt, Check } from "lucide-react";
 import { Link } from "react-router-dom";
 
 const SKIN = ["#F5C99B", "#EAC086", "#C68642", "#8D5524", "#5C3B1E", "#F1C27D", "#A78BFA", "#34D399"];
@@ -144,7 +144,7 @@ export default function AvatarEditor() {
                                   )}
                                   {equipped && (
                                     <span className="absolute -top-2 -right-2 bg-emerald-400 rounded-full border-2 border-slate-900 p-0.5">
-                                      <X size={12} strokeWidth={3} />
+                                      <Check size={12} strokeWidth={3} />
                                     </span>
                                   )}
                                 </button>
