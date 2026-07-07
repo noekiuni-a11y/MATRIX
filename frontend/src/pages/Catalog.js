@@ -185,11 +185,23 @@ export default function Catalog() {
                   className="flex flex-col bg-white border-4 border-slate-900 rounded-2xl overflow-hidden shadow-[4px_4px_0px_#0F172A] hover:-translate-y-2 hover:shadow-[8px_8px_0px_#0F172A] transition-all group"
                 >
                   <div className="aspect-square bg-slate-100 border-b-4 border-slate-900 p-4 relative group-hover:bg-sky-100 transition-colors">
-                    {item.is_live && (
-                      <span className="absolute top-2 left-2 z-10 flex items-center gap-1 bg-red-500 text-white text-[10px] font-black px-2 py-0.5 border-2 border-slate-900 rounded-full uppercase">
-                        <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" /> Live
-                      </span>
-                    )}
+                    <div className="absolute top-2 left-2 z-10 flex flex-col gap-1 items-start">
+                      {item.status === "limited" && (
+                        <span className="flex items-center gap-1 bg-amber-400 text-slate-900 text-[10px] font-black px-2 py-0.5 border-2 border-slate-900 rounded-full uppercase">
+                          {item.sold_out ? "Sold Out" : `Limited · ${item.remaining} left`}
+                        </span>
+                      )}
+                      {item.status === "offsale" && (
+                        <span className="bg-slate-900 text-white text-[10px] font-black px-2 py-0.5 border-2 border-slate-900 rounded-full uppercase">
+                          Off Sale
+                        </span>
+                      )}
+                      {item.status === "sale" && item.is_live && (
+                        <span className="flex items-center gap-1 bg-red-500 text-white text-[10px] font-black px-2 py-0.5 border-2 border-slate-900 rounded-full uppercase">
+                          <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" /> Live
+                        </span>
+                      )}
+                    </div>
                     {item.image ? (
                       <img src={item.image} alt={item.name} className="w-full h-full object-contain" />
                     ) : (

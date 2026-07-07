@@ -11,9 +11,22 @@ from datetime import datetime, timezone, date, timedelta
 from bson import ObjectId
 import bcrypt
 import jwt
+from emergentintegrations.payments.stripe.checkout import (
+    StripeCheckout,
+    CheckoutSessionRequest,
+    CheckoutStatusResponse,
+)
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
+
+# Server-side Brix packages (never trust the client for amounts)
+BRIX_PACKAGES = {
+    "starter": {"usd": 1.99, "brix": 500, "label": "Starter Pack", "bonus": 0},
+    "popular": {"usd": 4.99, "brix": 1500, "label": "Popular Pack", "bonus": 200},
+    "pro": {"usd": 9.99, "brix": 3500, "label": "Pro Pack", "bonus": 600},
+    "mega": {"usd": 19.99, "brix": 8000, "label": "Mega Pack", "bonus": 2000},
+}
 
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
@@ -120,6 +133,13 @@ class ItemInput(BaseModel):
     image: str = ""
     category: str = "hat"  # hat, face, shirt, pants, gear
     is_live: bool = True
+    status: str = "sale"   # sale, limited, offsale
+    stock: int = 0          # only used for limited items (total copies)
+
+
+class CheckoutInput(BaseModel):
+    package_id: str
+    origin_url: str
 
 
 class PromoInput(BaseModel):
@@ -224,6 +244,15 @@ async def get_profile(username: str):
 def serialize_item(doc: dict) -> dict:
     doc = dict(doc)
     doc["id"] = str(doc.pop("_id"))
+    doc.setdefault("status", "sale")
+    doc.setdefault("stock", 0)
+    doc.setdefault("sold", 0)
+    if doc["status"] == "limited":
+        doc["remaining"] = max(doc.get("stock", 0) - doc.get("sold", 0), 0)
+        doc["sold_out"] = doc["remaining"] <= 0
+    else:
+        doc["remaining"] = None
+        doc["sold_out"] = False
     return doc
 
 
@@ -251,20 +280,40 @@ async def buy_item(item_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Item not found")
     if item_id in user.get("owned_items", []):
         raise HTTPException(status_code=400, detail="You already own this item")
+    status = item.get("status", "sale")
+    if status == "offsale":
+        raise HTTPException(status_code=400, detail="This item is off-sale and cannot be purchased")
     price = item.get("price", 0)
     if user.get("brix", 0) < price:
         raise HTTPException(status_code=400, detail="Not enough Brix")
-    await db.users.update_one(
-        {"_id": user["_id"]},
+
+    if status == "limited":
+        stock = item.get("stock", 0)
+        # atomic claim of one copy while stock remains
+        claimed = await db.items.find_one_and_update(
+            {"_id": ObjectId(item_id), "$expr": {"$lt": [{"$ifNull": ["$sold", 0]}, stock]}},
+            {"$inc": {"sold": 1}},
+        )
+        if not claimed:
+            raise HTTPException(status_code=400, detail="Sold out! This limited item is gone.")
+
+    result = await db.users.find_one_and_update(
+        {"_id": user["_id"], "brix": {"$gte": price}, "owned_items": {"$ne": item_id}},
         {"$inc": {"brix": -price}, "$push": {"owned_items": item_id}},
+        return_document=True,
     )
-    updated = await db.users.find_one({"_id": user["_id"]})
-    return {"user": clean_user(updated), "message": f"Purchased {item['name']}!"}
+    if not result:
+        # refund the reserved limited copy on failure
+        if status == "limited":
+            await db.items.update_one({"_id": ObjectId(item_id)}, {"$inc": {"sold": -1}})
+        raise HTTPException(status_code=400, detail="Purchase failed")
+    return {"user": clean_user(result), "message": f"Purchased {item['name']}!"}
 
 
 @api_router.post("/admin/catalog")
 async def create_item(data: ItemInput, admin: dict = Depends(require_admin)):
     doc = data.model_dump()
+    doc["sold"] = 0
     doc["created_at"] = now_iso()
     res = await db.items.insert_one(doc)
     doc["_id"] = res.inserted_id
@@ -405,6 +454,117 @@ async def admin_stats(admin: dict = Depends(require_admin)):
         "promocodes": await db.promocodes.count_documents({}),
         "challenges": await db.challenges.count_documents({}),
     }
+
+
+# ---------------- Payments (Stripe: buy Brix) ----------------
+@api_router.get("/payments/packages")
+async def list_packages():
+    return [
+        {"id": k, "usd": v["usd"], "brix": v["brix"], "label": v["label"], "bonus": v["bonus"]}
+        for k, v in BRIX_PACKAGES.items()
+    ]
+
+
+def get_stripe(request: Request) -> StripeCheckout:
+    host_url = str(request.base_url)
+    webhook_url = f"{host_url}api/webhook/stripe"
+    return StripeCheckout(api_key=os.environ["STRIPE_API_KEY"], webhook_url=webhook_url)
+
+
+@api_router.post("/payments/checkout")
+async def create_checkout(data: CheckoutInput, request: Request, user: dict = Depends(get_current_user)):
+    pkg = BRIX_PACKAGES.get(data.package_id)
+    if not pkg:
+        raise HTTPException(status_code=400, detail="Invalid package")
+    amount = float(pkg["usd"])
+    total_brix = pkg["brix"] + pkg["bonus"]
+    origin = data.origin_url.rstrip("/")
+    success_url = f"{origin}/buy-brix?session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{origin}/buy-brix"
+    metadata = {
+        "user_id": str(user["_id"]),
+        "package_id": data.package_id,
+        "brix": str(total_brix),
+    }
+    stripe = get_stripe(request)
+    session = await stripe.create_checkout_session(
+        CheckoutSessionRequest(
+            amount=amount,
+            currency="usd",
+            success_url=success_url,
+            cancel_url=cancel_url,
+            metadata=metadata,
+        )
+    )
+    await db.payment_transactions.insert_one({
+        "session_id": session.session_id,
+        "user_id": str(user["_id"]),
+        "package_id": data.package_id,
+        "amount": amount,
+        "currency": "usd",
+        "brix": total_brix,
+        "payment_status": "initiated",
+        "credited": False,
+        "metadata": metadata,
+        "created_at": now_iso(),
+    })
+    return {"url": session.url, "session_id": session.session_id}
+
+
+async def _credit_if_paid(session_id: str, status: CheckoutStatusResponse):
+    txn = await db.payment_transactions.find_one({"session_id": session_id})
+    if not txn:
+        return
+    updates = {"payment_status": status.payment_status, "status": status.status}
+    if status.payment_status == "paid" and not txn.get("credited"):
+        res = await db.payment_transactions.update_one(
+            {"session_id": session_id, "credited": {"$ne": True}},
+            {"$set": {**updates, "credited": True}},
+        )
+        if res.modified_count == 1:
+            await db.users.update_one(
+                {"_id": ObjectId(txn["user_id"])},
+                {"$inc": {"brix": int(txn["brix"])}},
+            )
+    else:
+        await db.payment_transactions.update_one({"session_id": session_id}, {"$set": updates})
+
+
+@api_router.get("/payments/status/{session_id}")
+async def payment_status(session_id: str, request: Request, user: dict = Depends(get_current_user)):
+    stripe = get_stripe(request)
+    status = await stripe.get_checkout_status(session_id)
+    await _credit_if_paid(session_id, status)
+    txn = await db.payment_transactions.find_one({"session_id": session_id})
+    return {
+        "payment_status": status.payment_status,
+        "status": status.status,
+        "brix": txn.get("brix") if txn else None,
+        "credited": txn.get("credited", False) if txn else False,
+    }
+
+
+@api_router.post("/webhook/stripe")
+async def stripe_webhook(request: Request):
+    body = await request.body()
+    stripe = get_stripe(request)
+    try:
+        event = await stripe.handle_webhook(body, request.headers.get("Stripe-Signature"))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if event.session_id and event.payment_status == "paid":
+        txn = await db.payment_transactions.find_one({"session_id": event.session_id})
+        if txn and not txn.get("credited"):
+            res = await db.payment_transactions.update_one(
+                {"session_id": event.session_id, "credited": {"$ne": True}},
+                {"$set": {"payment_status": "paid", "credited": True}},
+            )
+            if res.modified_count == 1:
+                await db.users.update_one(
+                    {"_id": ObjectId(txn["user_id"])},
+                    {"$inc": {"brix": int(txn["brix"])}},
+                )
+    return {"received": True}
 
 
 @api_router.get("/")

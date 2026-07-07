@@ -1,6 +1,6 @@
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
-import { Coins, Store, UserCircle2, Shirt, Shield, LogOut, Boxes } from "lucide-react";
+import { Coins, Store, UserCircle2, Shirt, Shield, LogOut, Boxes, Plus } from "lucide-react";
 
 const brixBadge =
   "flex items-center gap-1.5 bg-amber-400 text-slate-900 font-black px-3 py-1.5 border-[3px] border-slate-900 rounded-xl shadow-[3px_3px_0px_#0F172A]";
@@ -52,10 +52,16 @@ export default function Navbar() {
         </nav>
 
         <div className="flex items-center gap-3">
-          <div className={brixBadge} data-testid="brix-balance">
+          <Link
+            to="/buy-brix"
+            data-testid="buy-brix-btn"
+            title="Buy more Brix"
+            className={`${brixBadge} hover:-translate-y-0.5 hover:shadow-[4px_4px_0px_#0F172A] transition-all`}
+          >
             <Coins size={18} strokeWidth={2.5} />
-            {(user.brix ?? 0).toLocaleString()}
-          </div>
+            <span data-testid="brix-balance">{(user.brix ?? 0).toLocaleString()}</span>
+            <Plus size={16} strokeWidth={3} className="ml-0.5 bg-slate-900 text-amber-400 rounded-full p-0.5" />
+          </Link>
           <button
             data-testid="logout-btn"
             onClick={() => {

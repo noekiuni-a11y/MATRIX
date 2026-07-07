@@ -29,7 +29,7 @@ function Stat({ icon: Icon, label, value, color }) {
 
 function ItemsTab() {
   const [items, setItems] = useState([]);
-  const [form, setForm] = useState({ name: "", description: "", price: 100, category: "hat", is_live: true, image: "" });
+  const [form, setForm] = useState({ name: "", description: "", price: 100, category: "hat", is_live: true, image: "", status: "sale", stock: 25 });
   const [busy, setBusy] = useState(false);
 
   const load = () => api.get("/catalog", { params: { all: true } }).then(({ data }) => setItems(data));
@@ -50,9 +50,9 @@ function ItemsTab() {
     e.preventDefault();
     setBusy(true);
     try {
-      await api.post("/admin/catalog", { ...form, price: Number(form.price) });
+      await api.post("/admin/catalog", { ...form, price: Number(form.price), stock: Number(form.stock) });
       toast.success("Item created!");
-      setForm({ name: "", description: "", price: 100, category: "hat", is_live: true, image: "" });
+      setForm({ name: "", description: "", price: 100, category: "hat", is_live: true, image: "", status: "sale", stock: 25 });
       load();
     } catch (err) {
       toast.error(formatApiError(err.response?.data?.detail));
@@ -85,6 +85,22 @@ function ItemsTab() {
           <input data-testid="item-live-input" type="checkbox" className="w-5 h-5 accent-blue-600" checked={form.is_live} onChange={(e) => setForm({ ...form, is_live: e.target.checked })} />
           Live (visible in catalog)
         </label>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs font-black uppercase text-slate-500">Sale type</label>
+            <select data-testid="item-status-input" className={inputCls} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+              <option value="sale">Regular sale</option>
+              <option value="limited">Limited</option>
+              <option value="offsale">Off sale</option>
+            </select>
+          </div>
+          {form.status === "limited" && (
+            <div>
+              <label className="text-xs font-black uppercase text-slate-500">Stock (copies)</label>
+              <input data-testid="item-stock-input" type="number" min={1} className={inputCls} value={form.stock} onChange={(e) => setForm({ ...form, stock: e.target.value })} />
+            </div>
+          )}
+        </div>
         <label className="flex items-center gap-2 bg-slate-100 border-[3px] border-dashed border-slate-400 rounded-xl px-4 py-3 font-bold cursor-pointer hover:bg-slate-200">
           <Upload size={18} /> Upload image
           <input data-testid="item-image-input" type="file" accept="image/*" className="hidden" onChange={onFile} />
@@ -104,7 +120,7 @@ function ItemsTab() {
             </div>
             <div className="flex-1 min-w-0">
               <p className="font-black truncate">{i.name}</p>
-              <p className="text-sm font-bold text-amber-600">{i.price} Brix · <span className="capitalize text-slate-500">{i.category}</span> {i.is_live ? "· 🔴 Live" : "· Hidden"}</p>
+              <p className="text-sm font-bold text-amber-600">{i.price} Brix · <span className="capitalize text-slate-500">{i.category}</span> · <span className="capitalize text-blue-600">{i.status === "limited" ? `Limited (${i.remaining ?? 0}/${i.stock} left)` : i.status}</span> {i.is_live ? "· 🔴 Live" : "· Hidden"}</p>
             </div>
             <button data-testid={`delete-item-${i.id}`} onClick={() => remove(i.id)} className="p-2 border-2 border-slate-900 rounded-lg hover:bg-red-500 hover:text-white transition-colors">
               <Trash2 size={16} />

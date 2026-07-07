@@ -1,0 +1,50 @@
+{
+  "summary": "Iteration 2 validated Stripe Buy-Brix flow, Roblox-style item sale statuses (sale/limited/offsale), and full regression. Backend pytest: 39/39 PASS (added TestPayments + TestItemStatuses; fixed 3 legacy TestPurchase tests that assumed all items were 'sale'). Frontend E2E via Playwright verified: /buy-brix renders 4 packages with correct testids, POST /api/payments/checkout returns a live checkout.stripe.com URL, Navbar Brix badge is a link to /buy-brix, Catalog cards display 'Limited · 10 left' badge (Royal Crown) and 'Off Sale' badge (Turbo Jetpack), item detail buy button for offsale item is disabled and reads 'Off sale', item detail for limited item shows 'LIMITED · 10 LEFT'. Admin panel: status select toggles stock input visibility, admin can create a limited item with stock and it appears in the admin list as 'Limited (5/5 Left)'. Verified that Brix is NOT credited pre-payment (payment_status='unpaid', credited=false), and that /api/payments/status is auth-protected.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/payments/checkout", "issue": "amount is correctly derived server-side from BRIX_PACKAGES (frontend cannot influence price) — verified. However CheckoutInput accepts an arbitrary origin_url string with no validation — a malicious client could set origin_url to any host, and Stripe would use that as success/cancel URL. Consider restricting origin_url to an allowlist or deriving from request.headers['origin']."},
+      {"endpoint": "POST /api/webhook/stripe", "issue": "Webhook signature verification is delegated to emergentintegrations. Not directly tested (requires Stripe-signed payload). Confirm the library actually validates signatures."},
+      {"endpoint": "GET /api/payments/status/{session_id}", "issue": "No check that session_id belongs to the requesting user — any authenticated user could poll (and thereby trigger credit-if-paid on) another user's session_id. Not a P0 (Brix is credited to the txn's original user_id), but could leak payment_status/brix amount of another user's session."},
+      {"endpoint": "get_current_user", "issue": "(carry-over from iter 1) still reads token from access_token cookie although no route sets that cookie — dead code path."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "ItemDetail (Not enough Brix)", "issues": ["Disabled Buy button 'Not enough Brix' uses white text on light blue-600 with 60% opacity — contrast is borderline (see Royal Crown detail screenshot). Consider a slightly darker disabled background or explicit disabled color."]},
+      {"screen": "BuyBrix packages", "issues": ["No indication of which pack is 'best value'/most popular; the visual differentiation is purely color, not a highlighted 'Popular' badge as is standard for currency shops."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "(Security) Validate/allowlist CheckoutInput.origin_url or derive origin server-side from Request.headers['origin'].",
+    "(Security) Restrict /api/payments/status/{session_id} to sessions owned by the requesting user (compare txn['user_id'] to current_user._id).",
+    "(Cleanup) Remove dead access_token cookie-read branch in get_current_user (iter 1 carry-over).",
+    "(Optional UX) Highlight the 'popular' package with a 'Best value' or 'Most popular' badge on /buy-brix."
+  ],
+  "critical_code_review_comments": [
+    "server.py now 620 lines — approaching the 700-line split threshold; consider extracting payments.py router next iteration.",
+    "buy_item is now atomic for limited stock (find_one_and_update with $expr guard on sold<stock) — good improvement over iter 1.",
+    "Payment credit is idempotent via payment_transactions.credited flag guarded by an atomic update — correctly prevents double-credit from both webhook and status polling.",
+    "BRIX_PACKAGES is the single source of truth for amounts (frontend cannot influence price) — verified via test.",
+    "serialize_item correctly sets remaining=None and sold_out=False for non-limited items to keep the response schema uniform.",
+    "MongoDB _id is properly excluded from all serializers (clean_user, serialize_item, serialize_promo)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py (added TestPayments, TestItemStatuses; fixed TestPurchase to filter status=='sale')",
+    "/app/test_reports/iteration_2.json (new)",
+    "/app/test_reports/pytest/pytest_results.xml (regenerated)"
+  ],
+  "success_rate": {"backend": "100% (39/39)", "frontend": "100% of tested flows"},
+  "test_credentials": "Admin: admin@matrix.com / admin123. Fresh users registered per test with @example.com emails.",
+  "seed_data_creation": "None persisted. Tests create temporary TEST_ prefixed limited/offsale items and delete them in finally blocks. Test creates transient payment_transactions records (Stripe test sessions) — these are unpaid and will expire, safe to leave.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Suite is fully idempotent. New TestPayments class uses emergentintegrations Stripe test-mode; sessions return real checkout.stripe.com URLs and 'unpaid' status which is expected — DO NOT attempt to complete card payments. TestItemStatuses uses admin token to create ephemeral limited/offsale items with unique names (TEST_ prefix) and always cleans up in finally. If TestPurchase.test_buy_expensive_not_enough_brix fails again, the most-expensive 'sale' item price may have dropped below the fresh user's initial 500 Brix (currently 2000). All new payment tests skip only if admin login fails.",
+  "rca of the issue": "3 legacy TestPurchase tests failed after iteration 2 introduced Royal Crown (limited, price 1200) and Turbo Jetpack (offsale, price 2000) — the tests picked cheapest/most-expensive without filtering by status, so 'cheapest' hit a sold-out TEST_ leftover from an earlier run and 'most-expensive' hit the offsale Jetpack (returning 'off-sale' 400 instead of 'not enough Brix' 400). Fix: filter catalog by status=='sale' before sort. All 39 tests now pass."
+}

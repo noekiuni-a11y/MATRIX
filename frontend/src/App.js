@@ -11,6 +11,7 @@ import ItemDetail from "@/pages/ItemDetail";
 import AvatarEditor from "@/pages/AvatarEditor";
 import Profile from "@/pages/Profile";
 import Admin from "@/pages/Admin";
+import BuyBrix from "@/pages/BuyBrix";
 import { Loader2 } from "lucide-react";
 
 function Loading() {
@@ -51,6 +52,7 @@ function AppRoutes() {
         <Route path="/item/:id" element={<Protected><ItemDetail /></Protected>} />
         <Route path="/avatar" element={<Protected><AvatarEditor /></Protected>} />
         <Route path="/u/:username" element={<Protected><Profile /></Protected>} />
+        <Route path="/buy-brix" element={<Protected><BuyBrix /></Protected>} />
         <Route path="/admin" element={<Protected admin><Admin /></Protected>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

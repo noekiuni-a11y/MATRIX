@@ -116,10 +116,11 @@ class TestPurchase:
         brix_before = reg.json()["user"]["brix"]
 
         items = sorted(
-            [i for i in requests.get(f"{API}/catalog").json() if i["price"] <= brix_before],
+            [i for i in requests.get(f"{API}/catalog").json()
+             if i["price"] <= brix_before and i.get("status", "sale") == "sale"],
             key=lambda x: x["price"],
         )
-        assert items, "No affordable item available"
+        assert items, "No affordable purchasable item available"
         cheap = items[0]
         r = requests.post(f"{API}/catalog/{cheap['id']}/buy", headers=auth_headers(token))
         assert r.status_code == 200, r.text
@@ -134,7 +135,10 @@ class TestPurchase:
         reg = requests.post(f"{API}/auth/register", json=creds)
         assert reg.status_code == 200, reg.text
         token = reg.json()["token"]
-        items = sorted(requests.get(f"{API}/catalog").json(), key=lambda x: x["price"])
+        items = sorted(
+            [i for i in requests.get(f"{API}/catalog").json() if i.get("status", "sale") == "sale"],
+            key=lambda x: x["price"],
+        )
         buy_r = requests.post(f"{API}/catalog/{items[0]['id']}/buy", headers=auth_headers(token))
         assert buy_r.status_code == 200, buy_r.text
         # Now attempt to buy same item again
@@ -143,9 +147,12 @@ class TestPurchase:
         assert "already own" in r.json()["detail"].lower()
 
     def test_buy_expensive_not_enough_brix(self, user_ctx):
-        items = sorted(requests.get(f"{API}/catalog").json(), key=lambda x: -x["price"])
-        expensive = items[0]  # 2000 Brix jetpack
-        # user should have < 2000 by now (started with 500 - cheapest)
+        items = sorted(
+            [i for i in requests.get(f"{API}/catalog").json() if i.get("status", "sale") == "sale"],
+            key=lambda x: -x["price"],
+        )
+        expensive = items[0]  # most expensive sale item
+        # user should have < expensive.price by now (started with 500)
         r = requests.post(f"{API}/catalog/{expensive['id']}/buy", headers=auth_headers(user_ctx["token"]))
         # user might not own it; expect 400 not enough brix
         assert r.status_code == 400
@@ -316,3 +323,203 @@ class TestAdmin:
         cid = r.json()["id"]
         d = requests.delete(f"{API}/admin/challenges/{cid}", headers=auth_headers(admin_token))
         assert d.status_code == 200
+
+
+# -------------- Stripe Payments --------------
+class TestPayments:
+    def test_packages_returns_four_fixed_packages(self):
+        r = requests.get(f"{API}/payments/packages")
+        assert r.status_code == 200
+        data = r.json()
+        assert isinstance(data, list)
+        ids = {p["id"] for p in data}
+        assert ids == {"starter", "popular", "pro", "mega"}
+        # Validate each package structure
+        for p in data:
+            for key in ("id", "usd", "brix", "label", "bonus"):
+                assert key in p, f"missing {key}"
+            assert isinstance(p["usd"], (int, float))
+            assert isinstance(p["brix"], int)
+        # Known amounts
+        by_id = {p["id"]: p for p in data}
+        assert by_id["starter"]["usd"] == 1.99 and by_id["starter"]["brix"] == 500
+        assert by_id["mega"]["usd"] == 19.99 and by_id["mega"]["brix"] == 8000
+
+    def test_checkout_requires_auth(self):
+        r = requests.post(f"{API}/payments/checkout",
+                          json={"package_id": "starter", "origin_url": "https://example.com"})
+        assert r.status_code == 401
+
+    def test_checkout_invalid_package_returns_400(self, user_ctx):
+        r = requests.post(f"{API}/payments/checkout",
+                          headers=auth_headers(user_ctx["token"]),
+                          json={"package_id": "nonexistent_pkg", "origin_url": "https://example.com"})
+        assert r.status_code == 400
+        assert "invalid" in r.json()["detail"].lower() or "package" in r.json()["detail"].lower()
+
+    def test_checkout_creates_stripe_session_and_transaction(self, user_ctx):
+        me_before = requests.get(f"{API}/auth/me", headers=auth_headers(user_ctx["token"])).json()
+        brix_before = me_before["brix"]
+        r = requests.post(
+            f"{API}/payments/checkout",
+            headers=auth_headers(user_ctx["token"]),
+            json={"package_id": "popular", "origin_url": "https://example.com"},
+        )
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert "url" in data and "session_id" in data
+        assert isinstance(data["url"], str) and data["url"].startswith("https://")
+        # Emergent stripe returns checkout.stripe.com
+        assert "stripe.com" in data["url"]
+        assert isinstance(data["session_id"], str) and len(data["session_id"]) > 5
+
+        # Brix must NOT be credited pre-payment
+        me_after = requests.get(f"{API}/auth/me", headers=auth_headers(user_ctx["token"])).json()
+        assert me_after["brix"] == brix_before, "Brix should not be credited before payment completes"
+
+        # Status endpoint should not credit brix while unpaid
+        status_r = requests.get(f"{API}/payments/status/{data['session_id']}",
+                                headers=auth_headers(user_ctx["token"]))
+        assert status_r.status_code == 200, status_r.text
+        sd = status_r.json()
+        # An unpaid session
+        assert sd["payment_status"] in ("unpaid", "no_payment_required"), sd
+        assert sd["credited"] is False
+        # Brix count for popular = 1500 base + 200 bonus = 1700
+        assert sd["brix"] == 1700
+
+        # Confirm no credit after status polling
+        me_after2 = requests.get(f"{API}/auth/me", headers=auth_headers(user_ctx["token"])).json()
+        assert me_after2["brix"] == brix_before, "Brix should not be credited via status while unpaid"
+
+    def test_checkout_status_requires_auth(self, user_ctx):
+        # First create a valid session
+        r = requests.post(
+            f"{API}/payments/checkout",
+            headers=auth_headers(user_ctx["token"]),
+            json={"package_id": "starter", "origin_url": "https://example.com"},
+        )
+        assert r.status_code == 200
+        sid = r.json()["session_id"]
+        # No auth header
+        r2 = requests.get(f"{API}/payments/status/{sid}")
+        assert r2.status_code == 401
+
+
+# -------------- Limited / Off-sale Item Business Logic --------------
+class TestItemStatuses:
+    def test_royal_crown_is_limited(self):
+        items = requests.get(f"{API}/catalog").json()
+        crown = next((i for i in items if i["name"] == "Royal Crown"), None)
+        assert crown is not None, "Royal Crown seed item missing"
+        assert crown["status"] == "limited"
+        assert isinstance(crown.get("remaining"), int)
+        assert crown.get("stock", 0) >= crown.get("remaining", 0)
+        assert isinstance(crown.get("sold_out"), bool)
+
+    def test_turbo_jetpack_is_offsale_and_blocks_buy(self, user_ctx):
+        items = requests.get(f"{API}/catalog").json()
+        jet = next((i for i in items if i["name"] == "Turbo Jetpack"), None)
+        assert jet is not None
+        assert jet["status"] == "offsale"
+        r = requests.post(f"{API}/catalog/{jet['id']}/buy", headers=auth_headers(user_ctx["token"]))
+        assert r.status_code == 400
+        assert "off" in r.json()["detail"].lower() or "sale" in r.json()["detail"].lower()
+
+    def test_sold_out_limited_item(self, admin_token):
+        # Create a limited item with stock=1, buy it as fresh user, then attempt a second buy
+        payload = {
+            "name": f"TEST_Limited_{uuid.uuid4().hex[:6]}",
+            "description": "sold out test",
+            "price": 10,
+            "image": "",
+            "category": "hat",
+            "is_live": True,
+            "status": "limited",
+            "stock": 1,
+        }
+        cr = requests.post(f"{API}/admin/catalog", headers=auth_headers(admin_token), json=payload)
+        assert cr.status_code == 200, cr.text
+        item = cr.json()
+        assert item["status"] == "limited"
+        assert item["remaining"] == 1
+        assert item["sold_out"] is False
+        iid = item["id"]
+
+        try:
+            # First buyer - success
+            suf1 = uuid.uuid4().hex[:8]
+            u1 = requests.post(f"{API}/auth/register",
+                               json={"username": f"limited1_{suf1}", "email": f"limited1_{suf1}@example.com", "password": "TestPass123!"}).json()
+            b1 = requests.post(f"{API}/catalog/{iid}/buy", headers=auth_headers(u1["token"]))
+            assert b1.status_code == 200, b1.text
+
+            # After: item should be sold_out with remaining=0
+            after = requests.get(f"{API}/catalog/{iid}").json()
+            assert after["remaining"] == 0
+            assert after["sold_out"] is True
+
+            # Second buyer - should get 400 Sold out
+            suf2 = uuid.uuid4().hex[:8]
+            u2 = requests.post(f"{API}/auth/register",
+                               json={"username": f"limited2_{suf2}", "email": f"limited2_{suf2}@example.com", "password": "TestPass123!"}).json()
+            b2 = requests.post(f"{API}/catalog/{iid}/buy", headers=auth_headers(u2["token"]))
+            assert b2.status_code == 400
+            assert "sold out" in b2.json()["detail"].lower()
+        finally:
+            requests.delete(f"{API}/admin/catalog/{iid}", headers=auth_headers(admin_token))
+
+    def test_admin_create_offsale_item(self, admin_token):
+        payload = {
+            "name": f"TEST_Offsale_{uuid.uuid4().hex[:6]}",
+            "description": "offsale test",
+            "price": 50,
+            "image": "",
+            "category": "gear",
+            "is_live": True,
+            "status": "offsale",
+            "stock": 0,
+        }
+        r = requests.post(f"{API}/admin/catalog", headers=auth_headers(admin_token), json=payload)
+        assert r.status_code == 200, r.text
+        item = r.json()
+        assert item["status"] == "offsale"
+        assert item["remaining"] is None
+        assert item["sold_out"] is False
+        try:
+            # A user cannot buy it
+            suf = uuid.uuid4().hex[:8]
+            u = requests.post(f"{API}/auth/register",
+                              json={"username": f"off_{suf}", "email": f"off_{suf}@example.com", "password": "TestPass123!"}).json()
+            b = requests.post(f"{API}/catalog/{item['id']}/buy", headers=auth_headers(u["token"]))
+            assert b.status_code == 400
+        finally:
+            requests.delete(f"{API}/admin/catalog/{item['id']}", headers=auth_headers(admin_token))
+
+    def test_limited_item_stock_and_remaining_after_purchase(self, admin_token):
+        payload = {
+            "name": f"TEST_LimitedN_{uuid.uuid4().hex[:6]}",
+            "description": "remaining test",
+            "price": 10,
+            "image": "",
+            "category": "face",
+            "is_live": True,
+            "status": "limited",
+            "stock": 3,
+        }
+        cr = requests.post(f"{API}/admin/catalog", headers=auth_headers(admin_token), json=payload)
+        assert cr.status_code == 200
+        iid = cr.json()["id"]
+        try:
+            # Fresh user buys 1
+            suf = uuid.uuid4().hex[:8]
+            u = requests.post(f"{API}/auth/register",
+                              json={"username": f"lm_{suf}", "email": f"lm_{suf}@example.com", "password": "TestPass123!"}).json()
+            b = requests.post(f"{API}/catalog/{iid}/buy", headers=auth_headers(u["token"]))
+            assert b.status_code == 200, b.text
+            after = requests.get(f"{API}/catalog/{iid}").json()
+            assert after["remaining"] == 2
+            assert after["sold_out"] is False
+            assert after["sold"] == 1
+        finally:
+            requests.delete(f"{API}/admin/catalog/{iid}", headers=auth_headers(admin_token))
